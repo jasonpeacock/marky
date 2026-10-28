@@ -2,7 +2,10 @@ use crate::{die, document, error, ioutil, note, themes};
 use clap::{ArgGroup, Command, Parser, ValueHint};
 use clap_complete::{Generator, Shell};
 use colored::Colorize;
-use std::{io, path::PathBuf};
+use std::{
+    io::{self, IsTerminal},
+    path::PathBuf,
+};
 
 #[derive(Parser)]
 #[command(name = "marky", author, version, about, long_about = None)]
@@ -104,7 +107,7 @@ impl Cli {
             return Ok(string.clone());
         }
 
-        if atty::isnt(atty::Stream::Stdin) {
+        if !io::stdin().is_terminal() {
             return ioutil::read_stdin();
         }
 

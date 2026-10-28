@@ -1,7 +1,10 @@
 use axum::{
     body::Body,
     extract::{
-        ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade},
+        ws::{
+            rejection::WebSocketUpgradeRejection, Message as AxumMessage, WebSocket,
+            WebSocketUpgrade,
+        },
         Extension,
     },
     http::{Request, StatusCode},
@@ -12,11 +15,11 @@ use tower::util::ServiceExt;
 use tower_http::services::ServeDir;
 
 pub async fn websocket_handler(
-    ws: Option<WebSocketUpgrade>,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     Extension(config): Extension<crate::server::Config>,
     Extension(html_rx): Extension<Receiver<String>>,
 ) -> impl IntoResponse {
-    if let Some(ws) = ws {
+    if let Ok(ws) = ws {
         return ws.on_upgrade(|ws| async { handle_websocket(ws, html_rx).await });
     }
 
@@ -34,7 +37,7 @@ pub async fn websocket_handler(
 async fn handle_websocket(mut socket: WebSocket, mut html_rx: Receiver<String>) {
     while html_rx.changed().await.is_ok() {
         let html = html_rx.borrow().clone();
-        if socket.send(AxumMessage::Text(html)).await.is_err() {
+        if socket.send(AxumMessage::Text(html.into())).await.is_err() {
             // The client went away; its tab was closed or reloaded.
             return;
         }

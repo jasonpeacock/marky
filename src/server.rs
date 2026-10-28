@@ -1,4 +1,4 @@
-use std::{cell::RefCell, net::SocketAddr, path::PathBuf};
+use std::{cell::RefCell, future::IntoFuture, net::SocketAddr, path::PathBuf};
 
 use crate::document;
 use crate::{error, info, service, warn};
@@ -39,9 +39,11 @@ impl Server {
             .layer(Extension(rx))
             .layer(Extension(config));
 
-        // try_bind reports a busy port as an error; bind would panic.
-        let http_server = axum::Server::try_bind(addr)?.serve(app.into_make_service());
-        let addr = http_server.local_addr();
+        // Bind synchronously so a busy port is reported as an error to the caller.
+        let listener = std::net::TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let addr = listener.local_addr()?;
 
         info!("Listening on {}", addr);
         info!("Opening in browser");
@@ -50,11 +52,11 @@ impl Server {
             warn!("Failed to open the page: {}", e);
         }
 
-        let http_server = http_server.with_graceful_shutdown(async move {
+        let http_server = axum::serve(listener, app).with_graceful_shutdown(async move {
             let _ = shutdown_rx.await;
         });
 
-        tokio::spawn(http_server);
+        tokio::spawn(http_server.into_future());
 
         Ok(Server {
             output: RefCell::new(String::new()),

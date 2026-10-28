@@ -2,9 +2,10 @@ use std::fs;
 
 use crate::info;
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use colored::Colorize;
 use handlebars::Handlebars;
-use image::{DynamicImage, ImageOutputFormat};
+use image::{DynamicImage, ImageFormat};
 use lol_html::{element, HtmlRewriter, Settings};
 use serde::Serialize;
 use std::ffi::OsStr;
@@ -242,9 +243,11 @@ impl Document {
                 .contents()
                 .to_vec();
 
+            let session = minify_js::Session::new();
             match minify_js::minify(
+                &session,
                 minify_js::TopLevelMode::Global,
-                script.clone(),
+                &script,
                 &mut minified_script,
             ) {
                 Ok(()) => String::from_utf8_lossy(minified_script.as_slice()).to_string(),
@@ -306,74 +309,73 @@ impl Document {
         let mut output = vec![];
 
         let mut rewriter = HtmlRewriter::new(
-            Settings {
-                element_content_handlers: vec![element!("img[src]", |el| {
-                    let src = el.get_attribute("src").expect("src was required");
+            Settings::new().append_element_content_handler(element!("img[src]", |el| {
+                let src = el.get_attribute("src").expect("src was required");
 
-                    let data = {
-                        let level = self.options.include_images.expect("must be not none");
+                let data = {
+                    let level = self.options.include_images.expect("must be not none");
 
-                        let include_remote =
-                            level == IncludeLevel::All || level == IncludeLevel::Remote;
+                    let include_remote =
+                        level == IncludeLevel::All || level == IncludeLevel::Remote;
 
-                        let include_local =
-                            level == IncludeLevel::All || level == IncludeLevel::Local;
+                    let include_local = level == IncludeLevel::All || level == IncludeLevel::Local;
 
-                        match classify_image_source(&decode_html_entities(&src), &self.base_dir) {
-                            ImageSource::Remote(url) if include_remote => {
-                                info!("Downloading {}", url);
+                    match classify_image_source(&decode_html_entities(&src), &self.base_dir) {
+                        ImageSource::Remote(url) if include_remote => {
+                            info!("Downloading {}", url);
 
-                                if url.split(['?', '#']).next().unwrap_or("").ends_with(".svg") {
-                                    let svg_data = download_image(url.as_str())
-                                        .map_err(|e| anyhow!("downloading {}: {}", url, e))?;
-                                    let base64_svg = base64::encode(&svg_data);
-                                    el.set_attribute(
-                                        "src",
-                                        &format!("data:image/svg+xml;base64,{}", base64_svg),
-                                    )?;
-                                    None
-                                } else {
-                                    Some(
-                                        download_image(url.as_str())
-                                            .map_err(|e| anyhow!("downloading {}: {}", url, e))?,
-                                    )
-                                }
-                            }
-                            ImageSource::Local(path) if include_local => {
-                                info!("Reading {}", path.display());
-
-                                let is_svg = path.extension() == Some(OsStr::new("svg"));
-
-                                if is_svg {
-                                    let svg_data = self.svg_to_base64(&path).map_err(|e| {
-                                        anyhow!("reading {}: {}", path.display(), e)
-                                    })?;
-                                    el.set_attribute("src", &svg_data)?;
-                                    None
-                                } else {
-                                    Some(fs::read(&path).map_err(|e| {
-                                        anyhow!("reading {}: {}", path.display(), e)
-                                    })?)
-                                }
-                            }
-                            _ => {
-                                info!("Skipping {}", src);
+                            if url.split(['?', '#']).next().unwrap_or("").ends_with(".svg") {
+                                let svg_data = download_image(url.as_str())
+                                    .map_err(|e| anyhow!("downloading {}: {}", url, e))?;
+                                let base64_svg =
+                                    base64::engine::general_purpose::STANDARD.encode(&svg_data);
+                                el.set_attribute(
+                                    "src",
+                                    &format!("data:image/svg+xml;base64,{}", base64_svg),
+                                )?;
                                 None
+                            } else {
+                                Some(
+                                    download_image(url.as_str())
+                                        .map_err(|e| anyhow!("downloading {}: {}", url, e))?,
+                                )
                             }
                         }
-                    };
+                        ImageSource::Local(path) if include_local => {
+                            info!("Reading {}", path.display());
 
-                    if let Some(data) = data {
-                        info!("Encoding to base64",);
-                        let img = image::load_from_memory(data.as_slice())
-                            .map_err(|e| anyhow!("decoding {}: {}", src, e))?;
-                        el.set_attribute("src", &self.image_to_base64(&img)?)?;
+                            let is_svg = path.extension() == Some(OsStr::new("svg"));
+
+                            if is_svg {
+                                let svg_data = self
+                                    .svg_to_base64(&path)
+                                    .map_err(|e| anyhow!("reading {}: {}", path.display(), e))?;
+                                el.set_attribute("src", &svg_data)?;
+                                None
+                            } else {
+                                Some(
+                                    fs::read(&path).map_err(|e| {
+                                        anyhow!("reading {}: {}", path.display(), e)
+                                    })?,
+                                )
+                            }
+                        }
+                        _ => {
+                            info!("Skipping {}", src);
+                            None
+                        }
                     }
+                };
 
-                    Ok(())
-                })],
-                ..Settings::default()
-            },
+                if let Some(data) = data {
+                    info!("Encoding to base64",);
+                    let img = image::load_from_memory(data.as_slice())
+                        .map_err(|e| anyhow!("decoding {}: {}", src, e))?;
+                    el.set_attribute("src", &self.image_to_base64(&img)?)?;
+                }
+
+                Ok(())
+            })),
             |c: &[u8]| output.extend_from_slice(c),
         );
 
@@ -385,7 +387,7 @@ impl Document {
 
     fn image_to_base64(&self, img: &DynamicImage) -> anyhow::Result<String> {
         let mut image_data: Vec<u8> = Vec::new();
-        img.write_to(&mut Cursor::new(&mut image_data), ImageOutputFormat::Png)?;
+        img.write_to(&mut Cursor::new(&mut image_data), ImageFormat::Png)?;
 
         if self.options.optimize_images {
             info!("Optimizing image");
@@ -395,13 +397,13 @@ impl Document {
             }
         }
 
-        let res_base64 = base64::encode(image_data);
+        let res_base64 = base64::engine::general_purpose::STANDARD.encode(image_data);
         Ok(format!("data:image/png;base64,{}", res_base64))
     }
 
     fn svg_to_base64(&self, path: &Path) -> anyhow::Result<String> {
         let svg_data = fs::read(path)?;
-        let base64_svg = base64::encode(svg_data);
+        let base64_svg = base64::engine::general_purpose::STANDARD.encode(svg_data);
         let svg_data_uri = format!("data:image/svg+xml;base64,{}", base64_svg);
         Ok(svg_data_uri)
     }
