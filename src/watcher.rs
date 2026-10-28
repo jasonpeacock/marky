@@ -25,7 +25,11 @@ macro_rules! watch {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default())?;
 
-        watcher.watch($path.as_path(), notify::RecursiveMode::NonRecursive)?;
+        // Watch the parent directory rather than the file itself: editors that save by
+        // renaming a temp file over the original replace its inode, which drops a file watch.
+        let watched = $path.canonicalize()?;
+        let parent = watched.parent().unwrap_or(Path::new("/")).to_path_buf();
+        watcher.watch(parent.as_path(), notify::RecursiveMode::NonRecursive)?;
 
         if let Ok(compiled) = recompile($path, $options) {
             $on_update$(.$field)*($($arg,)* &compiled).await;
@@ -34,7 +38,8 @@ macro_rules! watch {
         for res in rx {
             match res {
                 Ok(event) => {
-                    if event.kind.is_modify() {
+                    let changed = event.kind.is_modify() || event.kind.is_create();
+                    if changed && event.paths.iter().any(|p| p == &watched) {
                         match recompile($path, $options) {
                             Ok(compiled) => {
                                 $on_update$(.$field)*($($arg,)* &compiled).await;

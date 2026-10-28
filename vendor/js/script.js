@@ -44,7 +44,8 @@ function setupWebSockets() {
     return
   }
 
-  var webSocketUrl = 'ws://' + window.location.host;
+  var scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+  var webSocketUrl = scheme + window.location.host;
 
   var socket = new ReconnectingWebSocket(webSocketUrl);
   socket.maxReconnectInterval = 5000;
