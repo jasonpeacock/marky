@@ -1,7 +1,7 @@
 use std::fs;
 
 use crate::info;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use colored::Colorize;
 use handlebars::Handlebars;
 use image::{DynamicImage, ImageOutputFormat};
@@ -65,7 +65,7 @@ impl Document {
         reg
     }
 
-    pub fn render_body(&self) -> String {
+    pub fn render_body(&self) -> Result<String> {
         let markdown_options = markdown::Options {
             parse: markdown::ParseOptions {
                 constructs: markdown::Constructs {
@@ -88,14 +88,14 @@ impl Document {
             .expect("never errors with MDX disabled");
 
         if self.options.include_images.is_some() {
-            self.include_images(html).unwrap() // TODO
+            self.include_images(html)
         } else {
-            html
+            Ok(html)
         }
     }
 
     pub fn render(&self) -> Result<Vec<u8>> {
-        let body = self.render_body();
+        let body = self.render_body()?;
 
         let script: String = {
             let mut minified_script = Vec::new();
@@ -188,7 +188,8 @@ impl Document {
                             info!("Downloading {}", src);
 
                             if src.ends_with(".svg") {
-                                let svg_data = download_image(src.as_str())?;
+                                let svg_data = download_image(src.as_str())
+                                    .map_err(|e| anyhow!("downloading {}: {}", src, e))?;
                                 let base64_svg = base64::encode(&svg_data);
                                 el.set_attribute(
                                     "src",
@@ -196,7 +197,10 @@ impl Document {
                                 )?;
                                 None
                             } else {
-                                Some(download_image(src.as_str())?)
+                                Some(
+                                    download_image(src.as_str())
+                                        .map_err(|e| anyhow!("downloading {}: {}", src, e))?,
+                                )
                             }
                         } else if !is_remote && include_local {
                             info!("Reading {}", src);
@@ -205,11 +209,13 @@ impl Document {
                             let is_svg = path.extension() == Some(OsStr::new("svg"));
 
                             if is_svg {
-                                let svg_data = self.svg_to_base64(path)?;
+                                let svg_data = self
+                                    .svg_to_base64(path)
+                                    .map_err(|e| anyhow!("reading {}: {}", src, e))?;
                                 el.set_attribute("src", &svg_data)?;
                                 None
                             } else {
-                                Some(fs::read(src)?)
+                                Some(fs::read(&src).map_err(|e| anyhow!("reading {}: {}", src, e))?)
                             }
                         } else {
                             info!("Skipping {}", src);
@@ -219,7 +225,8 @@ impl Document {
 
                     if let Some(data) = data {
                         info!("Encoding to base64",);
-                        let img = image::load_from_memory(data.as_slice())?;
+                        let img = image::load_from_memory(data.as_slice())
+                            .map_err(|e| anyhow!("decoding {}: {}", src, e))?;
                         el.set_attribute("src", &self.image_to_base64(&img)?)?;
                     }
 
@@ -238,8 +245,7 @@ impl Document {
 
     fn image_to_base64(&self, img: &DynamicImage) -> anyhow::Result<String> {
         let mut image_data: Vec<u8> = Vec::new();
-        img.write_to(&mut Cursor::new(&mut image_data), ImageOutputFormat::Png)
-            .unwrap();
+        img.write_to(&mut Cursor::new(&mut image_data), ImageOutputFormat::Png)?;
 
         if self.options.optimize_images {
             info!("Optimizing image");
@@ -262,5 +268,7 @@ impl Document {
 }
 
 fn download_image(url: &str) -> anyhow::Result<Vec<u8>> {
-    Ok(reqwest::blocking::get(url)?.bytes()?.into())
+    // Rendering runs on the tokio runtime, where reqwest's blocking client panics
+    // unless the thread is marked as blocking.
+    tokio::task::block_in_place(|| Ok(reqwest::blocking::get(url)?.bytes()?.into()))
 }

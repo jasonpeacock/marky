@@ -33,7 +33,10 @@ pub async fn websocket_handler(
 async fn handle_websocket(mut socket: WebSocket, mut html_rx: Receiver<String>) {
     while html_rx.changed().await.is_ok() {
         let html = html_rx.borrow().clone();
-        socket.send(AxumMessage::Text(html)).await.unwrap();
+        if socket.send(AxumMessage::Text(html)).await.is_err() {
+            // The client went away; its tab was closed or reloaded.
+            return;
+        }
     }
 
     let _ = socket.send(AxumMessage::Close(None)).await;

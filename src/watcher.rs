@@ -35,11 +35,22 @@ macro_rules! watch {
             $on_update$(.$field)*($($arg,)* &compiled).await;
         }
 
-        for res in rx {
+        for res in rx.iter() {
             match res {
                 Ok(event) => {
                     let changed = event.kind.is_modify() || event.kind.is_create();
                     if changed && event.paths.iter().any(|p| p == &watched) {
+                        // One save produces a burst of events (write, close, rename, ...).
+                        // Swallow the rest of the burst so the file is recompiled once.
+                        // The deadline is fixed so steady writes to other files in the
+                        // directory can't keep extending it.
+                        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+                        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+                            if rx.recv_timeout(left).is_err() {
+                                break;
+                            }
+                        }
+
                         match recompile($path, $options) {
                             Ok(compiled) => {
                                 $on_update$(.$field)*($($arg,)* &compiled).await;
@@ -76,7 +87,8 @@ pub async fn watch_live(
         render_options: options.clone(),
     };
 
-    let server = crate::server::Server::bind(&addr, config);
+    let server = crate::server::Server::bind(&addr, config)
+        .map_err(|e| format!("cannot listen on {}: {}", addr, e))?;
 
     watch!(path, options, server.send)
 }

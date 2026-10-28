@@ -1,7 +1,7 @@
 use std::{cell::RefCell, net::SocketAddr, path::PathBuf};
 
 use crate::document;
-use crate::{info, service, warn};
+use crate::{error, info, service, warn};
 use axum::{routing::get, Extension, Router};
 use colored::Colorize;
 use tokio::sync::{
@@ -23,14 +23,13 @@ pub struct Config {
 /// contains JavaScript to open a websocket connection back to the server for rendering updates.
 #[derive(Debug)]
 pub struct Server {
-    pub addr: SocketAddr,
     output: RefCell<String>,
     tx: Sender<String>,
     _shutdown_tx: oneshot::Sender<()>,
 }
 
 impl Server {
-    pub fn bind(addr: &SocketAddr, config: Config) -> Self {
+    pub fn bind(addr: &SocketAddr, config: Config) -> anyhow::Result<Self> {
         let (tx, rx) = watch::channel(String::new());
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -40,7 +39,8 @@ impl Server {
             .layer(Extension(rx))
             .layer(Extension(config));
 
-        let http_server = axum::Server::bind(addr).serve(app.into_make_service());
+        // try_bind reports a busy port as an error; bind would panic.
+        let http_server = axum::Server::try_bind(addr)?.serve(app.into_make_service());
         let addr = http_server.local_addr();
 
         info!("Listening on {}", addr);
@@ -56,17 +56,21 @@ impl Server {
 
         tokio::spawn(http_server);
 
-        Server {
-            addr,
+        Ok(Server {
             output: RefCell::new(String::new()),
             tx,
             _shutdown_tx: shutdown_tx,
-        }
+        })
     }
 
     pub async fn send(&self, document: &crate::document::Document) {
-        self.output
-            .replace(self.tx.send_replace(document.render_body()));
+        // On failure keep showing the last successful render.
+        match document.render_body() {
+            Ok(body) => {
+                self.output.replace(self.tx.send_replace(body));
+            }
+            Err(e) => error!("render failed: {:#}", e),
+        }
     }
 
     // TODO: use it
