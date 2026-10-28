@@ -7,11 +7,13 @@ function setupDiagrams() {
   const e = document.querySelectorAll("code.language-mermaid");
   let n = 0;
   for (const t of e) {
-    const e = `mermaid${n}`;
+    const id = `mermaid${n}`;
     n++;
-    const o = (e) => { t.innerHTML = e }
     const d = t.textContent;
-    mermaid.mermaidAPI.render(e, d, o)
+    // Mermaid 10+ renders asynchronously and resolves to the SVG markup.
+    mermaid.render(id, d)
+      .then(({ svg }) => { t.innerHTML = svg })
+      .catch((err) => { console.error(`mermaid: ${err}`) })
   }
 }
 
