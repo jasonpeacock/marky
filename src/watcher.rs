@@ -13,6 +13,7 @@ fn recompile(path: &PathBuf, options: &document::RenderOptions) -> io::Result<do
         Ok(contents) => Ok(document::Document {
             text: contents,
             options: options.clone(),
+            base_dir: document::base_dir_for(Some(path)),
         }),
         Err(e) => Err(e),
     }
@@ -53,8 +54,9 @@ macro_rules! watch {
 
                         match recompile($path, $options) {
                             Ok(compiled) => {
-                                $on_update$(.$field)*($($arg,)* &compiled).await;
-                                info!("updated")
+                                if $on_update$(.$field)*($($arg,)* &compiled).await {
+                                    info!("updated")
+                                }
                             },
                             Err(e) => error!("compilation failed: {}", e)
                         }
@@ -101,13 +103,19 @@ pub async fn watch_file(
     watch!(path, options, write_to_file output)
 }
 
-async fn write_to_file(path: &PathBuf, document: &document::Document) {
+/// Returns whether the file was rendered and written.
+async fn write_to_file(path: &PathBuf, document: &document::Document) -> bool {
     match document.render() {
-        Ok(rendered) => {
-            if let Err(e) = std::fs::write(path, rendered) {
-                error!("{}", e);
+        Ok(rendered) => match std::fs::write(path, rendered) {
+            Ok(()) => true,
+            Err(e) => {
+                error!("writing {}: {}", path.display(), e);
+                false
             }
+        },
+        Err(e) => {
+            error!("render failed: {}", e);
+            false
         }
-        Err(e) => error!("{}", e),
     }
 }

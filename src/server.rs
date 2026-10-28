@@ -63,13 +63,18 @@ impl Server {
         })
     }
 
-    pub async fn send(&self, document: &crate::document::Document) {
-        // On failure keep showing the last successful render.
+    /// Pushes the rendered document to connected browsers and returns whether
+    /// rendering succeeded. On failure they keep showing the last good render.
+    pub async fn send(&self, document: &crate::document::Document) -> bool {
         match document.render_body() {
             Ok(body) => {
                 self.output.replace(self.tx.send_replace(body));
+                true
             }
-            Err(e) => error!("render failed: {:#}", e),
+            Err(e) => {
+                error!("render failed: {:#}", e);
+                false
+            }
         }
     }
 

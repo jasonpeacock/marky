@@ -23,6 +23,7 @@ pub async fn websocket_handler(
     let doc = crate::document::Document {
         text: "😴 Waiting for changes".into(),
         options: config.render_options,
+        base_dir: config.root_dir,
     };
 
     let buffer = doc.render().expect("Document with empty text must render");

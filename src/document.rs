@@ -9,7 +9,7 @@ use lol_html::{element, HtmlRewriter, Settings};
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::included::{TEMPLATES_DIR, VENDOR_DIR};
 use crate::themes::Theme;
@@ -17,6 +17,143 @@ use crate::themes::Theme;
 pub struct Document {
     pub text: String,
     pub options: RenderOptions,
+    /// Directory that relative local image paths are resolved against: the
+    /// markdown file's directory, or the current directory for --string/stdin.
+    pub base_dir: PathBuf,
+}
+
+/// Where an `<img src>` points, as far as image inlining is concerned.
+#[derive(Debug, PartialEq)]
+enum ImageSource {
+    Remote(String),
+    Local(PathBuf),
+    /// Empty (e.g. a data: URI the markdown compiler stripped) or an
+    /// unsupported scheme such as mailto:.
+    Unsupported,
+}
+
+/// The directory relative image paths in `path` refer to; the current
+/// directory when the markdown didn't come from a file.
+pub fn base_dir_for(path: Option<&Path>) -> PathBuf {
+    match path.and_then(Path::parent) {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// Decodes HTML character references in an attribute value. lol_html returns
+/// attribute values raw, and the markdown compiler escapes `&`, `<`, `>`, `"`.
+fn decode_html_entities(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+
+        let decoded = rest.find(';').and_then(|semi| {
+            let entity = &rest[1..semi];
+            let ch = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                _ => {
+                    let code = if let Some(hex) = entity
+                        .strip_prefix(['#'])
+                        .and_then(|e| e.strip_prefix(['x', 'X']))
+                    {
+                        u32::from_str_radix(hex, 16).ok()
+                    } else {
+                        entity
+                            .strip_prefix('#')
+                            .and_then(|dec| dec.parse::<u32>().ok())
+                    };
+                    code.and_then(char::from_u32)
+                }
+            };
+            ch.map(|c| (c, semi + 1))
+        });
+
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+
+    out.push_str(rest);
+    out
+}
+
+fn classify_image_source(src: &str, base_dir: &Path) -> ImageSource {
+    let decode = |s: &str| {
+        percent_encoding::percent_decode_str(s)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+
+    if src.is_empty() {
+        return ImageSource::Unsupported;
+    }
+
+    if src.starts_with("//") {
+        return ImageSource::Remote(format!("https:{}", src));
+    }
+
+    // A scheme is letters/digits/+-. before the first ':', with no '/' before it.
+    // A single letter is a Windows drive (C:/...), not a scheme.
+    if let Some((scheme, rest)) = src.split_once(':') {
+        let is_scheme = scheme.len() > 1
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+
+        if is_scheme {
+            return match scheme.to_ascii_lowercase().as_str() {
+                "http" | "https" => ImageSource::Remote(src.to_string()),
+                "file" => {
+                    let rest = rest.split(['?', '#']).next().unwrap_or("");
+                    // file://host/path: only an empty host or localhost means this machine.
+                    let path = match rest.strip_prefix("//") {
+                        Some(authority_and_path) => {
+                            let (host, path) = authority_and_path
+                                .find('/')
+                                .map(|i| authority_and_path.split_at(i))
+                                .unwrap_or((authority_and_path, ""));
+                            if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+                                return ImageSource::Unsupported;
+                            }
+                            path
+                        }
+                        None => rest,
+                    };
+                    // file: URLs are always absolute; file:a.png means /a.png.
+                    let path = decode(path);
+                    if path.starts_with('/') {
+                        ImageSource::Local(PathBuf::from(path))
+                    } else {
+                        ImageSource::Local(PathBuf::from(format!("/{}", path)))
+                    }
+                }
+                _ => ImageSource::Unsupported,
+            };
+        }
+    }
+
+    let path = PathBuf::from(decode(src.split(['?', '#']).next().unwrap_or("")));
+    if path.is_absolute() {
+        ImageSource::Local(path)
+    } else {
+        ImageSource::Local(base_dir.join(path))
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
@@ -182,44 +319,47 @@ impl Document {
                         let include_local =
                             level == IncludeLevel::All || level == IncludeLevel::Local;
 
-                        let is_remote = src.starts_with("http");
+                        match classify_image_source(&decode_html_entities(&src), &self.base_dir) {
+                            ImageSource::Remote(url) if include_remote => {
+                                info!("Downloading {}", url);
 
-                        if is_remote && include_remote {
-                            info!("Downloading {}", src);
-
-                            if src.ends_with(".svg") {
-                                let svg_data = download_image(src.as_str())
-                                    .map_err(|e| anyhow!("downloading {}: {}", src, e))?;
-                                let base64_svg = base64::encode(&svg_data);
-                                el.set_attribute(
-                                    "src",
-                                    &format!("data:image/svg+xml;base64,{}", base64_svg),
-                                )?;
-                                None
-                            } else {
-                                Some(
-                                    download_image(src.as_str())
-                                        .map_err(|e| anyhow!("downloading {}: {}", src, e))?,
-                                )
+                                if url.split(['?', '#']).next().unwrap_or("").ends_with(".svg") {
+                                    let svg_data = download_image(url.as_str())
+                                        .map_err(|e| anyhow!("downloading {}: {}", url, e))?;
+                                    let base64_svg = base64::encode(&svg_data);
+                                    el.set_attribute(
+                                        "src",
+                                        &format!("data:image/svg+xml;base64,{}", base64_svg),
+                                    )?;
+                                    None
+                                } else {
+                                    Some(
+                                        download_image(url.as_str())
+                                            .map_err(|e| anyhow!("downloading {}: {}", url, e))?,
+                                    )
+                                }
                             }
-                        } else if !is_remote && include_local {
-                            info!("Reading {}", src);
+                            ImageSource::Local(path) if include_local => {
+                                info!("Reading {}", path.display());
 
-                            let path = Path::new(&src);
-                            let is_svg = path.extension() == Some(OsStr::new("svg"));
+                                let is_svg = path.extension() == Some(OsStr::new("svg"));
 
-                            if is_svg {
-                                let svg_data = self
-                                    .svg_to_base64(path)
-                                    .map_err(|e| anyhow!("reading {}: {}", src, e))?;
-                                el.set_attribute("src", &svg_data)?;
-                                None
-                            } else {
-                                Some(fs::read(&src).map_err(|e| anyhow!("reading {}: {}", src, e))?)
+                                if is_svg {
+                                    let svg_data = self.svg_to_base64(&path).map_err(|e| {
+                                        anyhow!("reading {}: {}", path.display(), e)
+                                    })?;
+                                    el.set_attribute("src", &svg_data)?;
+                                    None
+                                } else {
+                                    Some(fs::read(&path).map_err(|e| {
+                                        anyhow!("reading {}: {}", path.display(), e)
+                                    })?)
+                                }
                             }
-                        } else {
-                            info!("Skipping {}", src);
-                            None
+                            _ => {
+                                info!("Skipping {}", src);
+                                None
+                            }
                         }
                     };
 
@@ -271,4 +411,123 @@ fn download_image(url: &str) -> anyhow::Result<Vec<u8>> {
     // Rendering runs on the tokio runtime, where reqwest's blocking client panics
     // unless the thread is marked as blocking.
     tokio::task::block_in_place(|| Ok(reqwest::blocking::get(url)?.bytes()?.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local(p: &str) -> ImageSource {
+        ImageSource::Local(PathBuf::from(p))
+    }
+
+    #[test]
+    fn relative_paths_resolve_against_base_dir() {
+        let base = Path::new("/docs");
+        assert_eq!(
+            classify_image_source("img/a.png", base),
+            local("/docs/img/a.png")
+        );
+        assert_eq!(
+            classify_image_source("../a.png", base),
+            local("/docs/../a.png")
+        );
+        assert_eq!(
+            classify_image_source("/abs/a.png", base),
+            local("/abs/a.png")
+        );
+    }
+
+    #[test]
+    fn local_paths_are_percent_decoded_and_lose_query_and_fragment() {
+        let base = Path::new("/docs");
+        assert_eq!(
+            classify_image_source("my%20img.png", base),
+            local("/docs/my img.png")
+        );
+        assert_eq!(
+            classify_image_source("dir/%C3%BC.png", base),
+            local("/docs/dir/ü.png")
+        );
+        assert_eq!(
+            classify_image_source("a.png?v=1#f", base),
+            local("/docs/a.png")
+        );
+        assert_eq!(
+            classify_image_source("file:///abs/my%20a.png", base),
+            local("/abs/my a.png")
+        );
+        assert_eq!(
+            classify_image_source("file://localhost/abs/a.png", base),
+            local("/abs/a.png")
+        );
+        assert_eq!(
+            classify_image_source("file://LOCALHOST/abs/a.png", base),
+            local("/abs/a.png")
+        );
+        assert_eq!(
+            classify_image_source("file:abs/a.png", base),
+            local("/abs/a.png")
+        );
+        assert_eq!(
+            classify_image_source("file://other/abs/a.png", base),
+            ImageSource::Unsupported
+        );
+    }
+
+    #[test]
+    fn remote_and_unsupported_sources() {
+        let base = Path::new("/docs");
+        let remote = |u: &str| ImageSource::Remote(u.to_string());
+        assert_eq!(
+            classify_image_source("https://x.dev/a.png", base),
+            remote("https://x.dev/a.png")
+        );
+        assert_eq!(
+            classify_image_source("HTTP://x.dev/a.png", base),
+            remote("HTTP://x.dev/a.png")
+        );
+        assert_eq!(
+            classify_image_source("//x.dev/a.png", base),
+            remote("https://x.dev/a.png")
+        );
+        assert_eq!(
+            classify_image_source("httpfoo.png", base),
+            local("/docs/httpfoo.png")
+        );
+        assert_eq!(classify_image_source("", base), ImageSource::Unsupported);
+        assert_eq!(
+            classify_image_source("mailto:a@b.c", base),
+            ImageSource::Unsupported
+        );
+    }
+
+    #[test]
+    fn html_entities_are_decoded() {
+        assert_eq!(decode_html_entities("a&amp;b.png"), "a&b.png");
+        assert_eq!(decode_html_entities("x?a=1&amp;b=2"), "x?a=1&b=2");
+        assert_eq!(
+            decode_html_entities("&lt;&gt;&quot;&apos;&#39;&#x41;&#X42;"),
+            "<>\"''AB"
+        );
+        assert_eq!(
+            decode_html_entities("a&b; &unknown; &amp"),
+            "a&b; &unknown; &amp"
+        );
+        assert_eq!(decode_html_entities("&#xD800;"), "&#xD800;");
+    }
+
+    #[test]
+    fn base_dir_falls_back_to_current_directory() {
+        assert_eq!(
+            base_dir_for(Some(Path::new("/docs/a.md"))),
+            PathBuf::from("/docs")
+        );
+        assert_eq!(
+            base_dir_for(Some(Path::new("sub/a.md"))),
+            PathBuf::from("sub")
+        );
+        assert_eq!(base_dir_for(Some(Path::new("a.md"))), PathBuf::from("."));
+        assert_eq!(base_dir_for(None), PathBuf::from("."));
+    }
 }

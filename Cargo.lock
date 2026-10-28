@@ -1315,6 +1315,7 @@ dependencies = [
  "notify",
  "open",
  "oxipng",
+ "percent-encoding",
  "reqwest",
  "serde",
  "tempfile",

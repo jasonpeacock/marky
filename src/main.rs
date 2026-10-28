@@ -102,6 +102,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let doc = document::Document {
         text: cli.get_markdown()?,
         options,
+        base_dir: document::base_dir_for(cli.path.as_deref()),
     };
     let buffer = doc.render()?;
 
