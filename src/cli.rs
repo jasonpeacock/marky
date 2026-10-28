@@ -96,16 +96,16 @@ pub fn print_completions<G: Generator>(gen: G, cmd: &mut Command) {
 
 impl Cli {
     pub fn get_markdown(&self) -> io::Result<String> {
-        if atty::isnt(atty::Stream::Stdin) {
-            return ioutil::read_stdin();
-        }
-
         if let Some(path) = &self.path {
             return ioutil::read_path(&path);
         }
 
         if let Some(string) = &self.string {
             return Ok(string.clone());
+        }
+
+        if atty::isnt(atty::Stream::Stdin) {
+            return ioutil::read_stdin();
         }
 
         die!("no input is given, see {}", "--help".yellow());
