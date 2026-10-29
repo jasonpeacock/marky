@@ -57,10 +57,26 @@ function setupWebSockets() {
     setup()
   }
 
+  // ReconnectingWebSocket fires onclose on every disconnect and then retries,
+  // so show a marker while the connection is down instead of closing the tab.
+  socket.onopen = () => {
+    var marker = document.getElementById('marky-reconnecting');
+    if (marker) {
+      marker.remove();
+    }
+  }
+
   socket.onclose = () => {
-    // Close the browser window.
-    window.open('', '_self', '');
-    window.close();
+    if (document.getElementById('marky-reconnecting')) {
+      return
+    }
+
+    var marker = document.createElement('div');
+    marker.id = 'marky-reconnecting';
+    marker.textContent = 'reconnecting\u2026';
+    marker.style.cssText = 'position:fixed;top:0.5em;right:0.5em;padding:0.2em 0.6em;'
+      + 'font:12px sans-serif;background:#333;color:#fff;opacity:0.8;border-radius:4px;z-index:9999';
+    document.body.appendChild(marker);
   }
 }
 
