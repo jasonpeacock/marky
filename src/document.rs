@@ -157,7 +157,8 @@ fn classify_image_source(src: &str, base_dir: &Path) -> ImageSource {
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
+#[derive(clap::ValueEnum, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum IncludeLevel {
     Local,
     Remote,

@@ -1,4 +1,4 @@
-use crate::{die, document, error, ioutil, note, themes};
+use crate::{config, die, document, error, ioutil, note, paths, themes};
 use clap::{ArgGroup, Command, Parser, ValueHint};
 use clap_complete::{Generator, Shell};
 use colored::Colorize;
@@ -86,8 +86,8 @@ pub struct Cli {
     #[arg(short, long, help = "Live preview in the browser")]
     pub live: bool,
 
-    #[arg(long, default_value = "8080", help = "Port of the live server")]
-    pub port: u16,
+    #[arg(long, help = "Port of the live server [default: 8080]")]
+    pub port: Option<u16>,
 
     #[arg(short = 'O', long, help = "Open output file in the default app")]
     pub open: bool,
@@ -114,25 +114,33 @@ impl Cli {
         die!("no input is given, see {}", "--help".yellow());
     }
 
-    pub fn get_theme(&self) -> Result<themes::Theme, Box<dyn std::error::Error>> {
-        match &self.theme {
-            Some(name) => {
-                let available = themes::available_themes()?;
+    pub fn get_theme(
+        &self,
+        config: &config::Config,
+    ) -> Result<themes::Theme, Box<dyn std::error::Error>> {
+        let (name, from_config) = match (&self.theme, &config.theme) {
+            (Some(name), _) => (name, false),
+            (None, Some(name)) => (name, true),
+            (None, None) => return Ok(themes::Theme::default()),
+        };
 
-                match available.by_name(name) {
-                    Some(theme) => Ok(theme),
-                    None => {
-                        error!("unknown theme {}", name.cyan());
+        let available = themes::available_themes()?;
 
-                        if let Some(closest) = available.closest_match(name) {
-                            note!("theme {} exists", closest.name.cyan());
-                        }
+        match available.by_name(name) {
+            Some(theme) => Ok(theme),
+            None => {
+                error!("unknown theme {}", name.cyan());
 
-                        die!();
-                    }
+                if from_config {
+                    note!("set in {}", paths::files::config().display());
                 }
+
+                if let Some(closest) = available.closest_match(name) {
+                    note!("theme {} exists", closest.name.cyan());
+                }
+
+                die!();
             }
-            None => Ok(themes::Theme::default()),
         }
     }
 }

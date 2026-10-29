@@ -14,6 +14,7 @@ Markdown Magician 🧙
 
 - [Examples](#examples)
 - [Install](#install)
+- [Configuration](#configuration)
 - [Help](#help)
 - [Build](#build)
 - [Screenshots](#screenshots)
@@ -70,6 +71,79 @@ Install using [cargo](https://doc.rust-lang.org/cargo/getting-started/installati
 
 ```bash
 cargo install marky
+```
+
+## Configuration
+
+marky reads its config files from the directory that `marky --where-config` prints.
+That is `~/.config/marky` on Linux and `~/Library/Application Support/marky` on macOS.
+Both files are optional.
+
+### config.toml
+
+`config.toml` sets your default options, so you do not have to pass the same flags every time.
+Flags on the command line take precedence:
+
+- `--theme` and `--port` replace the value from the config file.
+- Boolean flags such as `--math` can only turn an option on. If the config file
+  turns an option on, no flag turns it off for a single run.
+
+This example shows every key with its default value. Copy it into
+`config.toml` and change the keys you need. You can leave out any key.
+
+```toml
+# Theme to use. See `marky --themes` for the available names.
+theme = "sakura"
+
+# Enable syntax highlighting with highlight.js (--highlight).
+highlight = false
+
+# Enable math rendering with KaTeX (--math).
+math = false
+
+# Enable UML diagram rendering with Mermaid (--diagrams).
+diagrams = false
+
+# Include images into the file as base64. Not set by default, so images are
+# left as links. Possible values: "local", "remote", "all" (--include-images).
+# include_images = "local"
+
+# Optimize included images to make them smaller (--optimize-images).
+optimize_images = false
+
+# Port of the live server (--port).
+port = 8080
+
+# Open the output file in the default app (--open).
+open = false
+```
+
+marky stops with an error if `config.toml` has an unknown key or a value of the wrong type.
+
+### themes.toml
+
+`themes.toml` adds your own themes to the built-in ones. Each `[[themes]]`
+entry needs a `name` and one source of CSS:
+
+- `path` is a CSS file. A relative path is relative to the config directory.
+- `inline` is the CSS itself.
+
+```toml
+[[themes]]
+name = "mytheme"
+path = "themes/mytheme.css"
+
+[[themes]]
+name = "tiny"
+inline = """
+body { max-width: 40em; margin: auto; font-family: sans-serif; }
+"""
+```
+
+Then use the theme by name, on the command line or in `config.toml`:
+
+```bash
+marky doc.md --theme mytheme
 ```
 
 ## Help
@@ -155,4 +229,4 @@ marky README.md --theme retro
 
 See `marky --themes` to show all available themes.
 
-You can also add your own themes, but it's not documented yet... 😴
+You can also add your own themes, see [themes.toml](#themestoml).

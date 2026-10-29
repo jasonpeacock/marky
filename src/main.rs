@@ -3,6 +3,7 @@ use colored::Colorize;
 use std::path::PathBuf;
 
 mod cli;
+mod config;
 mod document;
 mod included;
 mod ioutil;
@@ -46,14 +47,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let config = config::load()?;
+
     let options = document::RenderOptions {
-        theme: cli.get_theme()?,
-        math: cli.all || cli.math,
-        highlight: cli.all || cli.highlight,
-        diagrams: cli.all || cli.diagrams,
+        theme: cli.get_theme(&config)?,
+        math: cli.all || cli.math || config.math,
+        highlight: cli.all || cli.highlight || config.highlight,
+        diagrams: cli.all || cli.diagrams || config.diagrams,
         live: cli.live,
-        include_images: cli.include_images,
-        optimize_images: cli.optimize_images,
+        include_images: cli.include_images.or(config.include_images),
+        optimize_images: cli.optimize_images || config.optimize_images,
     };
 
     info!("Using theme {}", options.theme.name.cyan());
@@ -91,7 +94,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let path = &cli.path.unwrap();
 
         if cli.live {
-            watcher::watch_live(path, &options, cli.port).await?;
+            watcher::watch_live(path, &options, cli.port.unwrap_or(config.port)).await?;
         } else {
             watcher::watch_file(path, &out, &options).await?;
         }
@@ -117,7 +120,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &out.display().to_string().cyan(),
         );
 
-        if cli.open {
+        if cli.open || config.open {
             open::that(&out)?;
         }
     }

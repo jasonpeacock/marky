@@ -13,6 +13,10 @@ pub mod dirs {
 pub mod files {
     use super::PathBuf;
 
+    pub fn config() -> PathBuf {
+        super::dirs::config().join("config.toml")
+    }
+
     pub fn themes() -> PathBuf {
         super::dirs::config().join("themes.toml")
     }
