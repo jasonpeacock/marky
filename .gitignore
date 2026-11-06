@@ -36,3 +36,4 @@ Temporary Items
 devenv.local.nix
 .direnv*
 .pre-commit-config.yaml
+result

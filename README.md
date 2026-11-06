@@ -73,6 +73,48 @@ Install using [cargo](https://doc.rust-lang.org/cargo/getting-started/installati
 cargo install marky
 ```
 
+### Nix / home-manager
+
+The flake builds marky, runs its tests, and installs bash, fish and zsh
+completions.
+
+```bash
+nix run github:jasonpeacock/marky -- README.md --live
+nix profile install github:jasonpeacock/marky
+```
+
+Other outputs: `overlays.default` (adds `pkgs.marky`), `devShells.default`, and
+`homeModules.default` (also `homeManagerModules.default`).
+
+In home-manager:
+
+```nix
+{
+  inputs.marky.url = "github:jasonpeacock/marky";
+
+  # in your home-manager configuration:
+  imports = [ inputs.marky.homeModules.default ];
+
+  programs.marky = {
+    enable = true;
+    settings = {
+      theme = "air";
+      highlight = true;
+      math = true;
+      include_images = "local"; # "local" | "remote" | "all"
+      port = 3000;
+    };
+  };
+}
+```
+
+`settings` is written to `config.toml` only when you set something: to
+`$XDG_CONFIG_HOME/marky/config.toml` on Linux and to
+`~/Library/Application Support/marky/config.toml` on macOS. The typed keys are
+the ones in [config.toml](#configtoml). Other keys pass through, but marky stops
+with an error on a key it does not know. `themes.toml` is not managed; write it
+with `xdg.configFile` or `home.file` if you need one.
+
 ## Configuration
 
 marky reads its config files from the directory that `marky --where-config` prints.
